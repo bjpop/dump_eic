@@ -12,13 +12,13 @@ fi
 #SBATCH -p main
 
 # The name of the job:
-#SBATCH --job-name="plot_doublets"
+#SBATCH --job-name="neg_tight_t30"
 
 # Maximum number of CPU cores used by the job:
 #SBATCH --ntasks=1
 
 # The amount of memory in megabytes per process in the job:
-#SBATCH --mem-per-cpu=10240
+#SBATCH --mem-per-cpu=70240
 
 # Send yourself an email when the job:
 # aborts abnormally (fails)
@@ -34,4 +34,4 @@ fi
 module load python-gcc/2.7.5
 
 # The job command(s):
-python dump_eic.py --mzml data/t30.mzML --hits data/results-neg-t30-lt500-64-1114994-top100.list
+python dump_eic.py --mzml data/t30.mzML --hits data/neg.tight.t30.list --outdir neg_tight_t30 

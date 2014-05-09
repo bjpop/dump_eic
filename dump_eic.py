@@ -3,6 +3,7 @@
 from socket import gethostname
 import sys
 import os
+import os.path
 from argparse import ArgumentParser
 import logging
 import pymzml
@@ -11,8 +12,9 @@ PROGRAM_NAME = 'dump_eic'
 DEFAULT_MZ_DELTA = 6.0201
 DEFAULT_LOG_FILE = 'log.txt'
 HALF_TIME_WINDOW = 20.0
-#HALF_MASS_WINDOW = 0.005
-HALF_MASS_WINDOW = 0.025
+
+ARRAY_WINDOW = 3 # take the average of 3 values near the hit
+ARRAY_HALF_WINDOW = ARRAY_WINDOW // 2
 
 def parse_args():
     'Dump an EIC from an mzML file'
@@ -29,15 +31,11 @@ def parse_args():
     parser.add_argument('--hits', metavar='FILENAME', type=str,
         help='CSV file containing list of hits', required=True)
 
+    parser.add_argument('--outdir', metavar='PATH', type=str,
+        help='output directory for eic files', required=True)
+
     return parser.parse_args()
 
-
-# assumes input is not empty, and contains floats
-def average(ns):
-    if ns:
-        return sum(ns) / len(ns)
-    else:
-        return 0
 
 def main():
     '''Entry point for the program.'''
@@ -56,59 +54,86 @@ def main():
     logging.info('working directory: {}'.format(working_directory))
     logging.info('command line: {}'.format(command_line_text))
 
+    if not os.path.exists(args.outdir):
+        os.mkdir(args.outdir)
+
+    # this could consume lots of memory
+    spectra = list(parseMZML(args.mzml))
+
     with open(args.hits) as hits_file:
         for hit_num, line in enumerate(hits_file, 1):
-            fields = line.split(',')
-            time, mass, intensity, score = fields[:4]
-            time = float(time.strip())
-            mass = float(mass.strip())
-            print("looking for {} {}".format(time, mass))
-            time_low = time - HALF_TIME_WINDOW
-            time_high = time + HALF_TIME_WINDOW
-            first_mass_low = mass - HALF_MASS_WINDOW
-            first_mass_high = mass + HALF_MASS_WINDOW
-            second_mass = mass + DEFAULT_MZ_DELTA
-            second_mass_low = second_mass - HALF_MASS_WINDOW
-            second_mass_high = second_mass + HALF_MASS_WINDOW
-            with open("results/hit_{}".format(hit_num), "w") as output_file:
+            if hit_num > 1000:
+                return
+            output_filename = os.path.join(args.outdir, "hit_{}".format(hit_num))
+            with open(output_filename, "w") as output_file:
+                fields = line.split(',')
+                time, mass, intensity, score = fields[:4]
+                time = float(time.strip())
+                mass_low = float(mass.strip())
+                time_low = time - HALF_TIME_WINDOW
+                time_high = time + HALF_TIME_WINDOW
+                mass_high = mass_low + DEFAULT_MZ_DELTA
+                time_low_index = binary_search(time_low, spectra, lambda s: s.time)
+                time_high_index = binary_search(time_high, spectra, lambda s: s.time)
+                for spectrum in spectra[time_low_index: time_high_index + 1]:
+                    mass_index_low = binary_search(mass_low, spectrum.mzs)
+                    mass_index_high = binary_search(mass_high, spectrum.mzs)
+                    intensity_low = index_array(mass_index_low, spectrum.intensities)
+                    intensity_high = index_array(mass_index_high, spectrum.intensities)
+                    found_mass_low = index_array(mass_index_low, spectrum.mzs)
+                    found_mass_high = index_array(mass_index_high, spectrum.mzs)
+                    output_file.write("{} {} {} {} {}\n".
+                        format(spectrum.time, found_mass_low, intensity_low, found_mass_high, intensity_high))
+                '''
                 for spectrum in parseMZML(args.mzml):
                     spectrum_time = float(spectrum.time)
-                    #print(spectrum_time)
                     if time_low <= spectrum_time <= time_high:
-                        low_intensities = []
-                        high_intensities = []
-                        for index, spectrum_mass in enumerate(spectrum.mzs):
-                            if first_mass_low <= spectrum_mass <= first_mass_high:
-                                intensity = spectrum.intensities[index]
-                                #output_file.write("{} {} ".format(spectrum_mass, intensity))
-                                low_intensities.append(intensity)
-                            if second_mass_low <= spectrum_mass <= second_mass_high:
-                                intensity = spectrum.intensities[index]
-                                #output_file.write("{} {}".format(spectrum_mass, intensity))
-                                high_intensities.append(intensity)
-                        avg_low = average(low_intensities)
-                        avg_high = average(high_intensities)
+                        index_low = binary_search(mass_low, spectrum.mzs)
+                        index_high = binary_search(mass_high, spectrum.mzs)
+                        intensity_low = index_array(index_low, spectrum.intensities)
+                        intensity_high = index_array(index_high, spectrum.intensities)
+                        found_mass_low = index_array(index_low, spectrum.mzs)
+                        found_mass_high = index_array(index_high, spectrum.mzs)
                         output_file.write("{} {} {} {} {}\n".
-                            format(spectrum_time, mass, avg_low, second_mass, avg_high))
+                            format(spectrum_time, found_mass_low, intensity_low, found_mass_high, intensity_high))
                     if spectrum_time > time_high:
                         break
+                '''
 
-'''
-def lookupMassBin(mass, bins):
-    bins = bins[:,[0,2]]  # get start, stop_exl values
-    high = len(bins) - 1
-    low = 0
-    while low <= high:
-        mid = (low + high) // 2
-        binlow, binhigh = bins[mid]
-        if mass < binlow:
-            high = mid - 1
-        elif mass >= binhigh:
-            low = mid + 1
-        else:
-            return mid
-    return None
-'''
+def average(ns):
+    if ns:
+        return sum(ns) / len(ns)
+    else:
+        return 0
+
+def index_array(index, array):
+    if index is not None and 0 <= index < len(array):
+        return average(array[index - ARRAY_HALF_WINDOW: index + ARRAY_HALF_WINDOW + 1])
+    else:
+        return 0
+
+def binary_search(target, values, getter = lambda x: x):
+    if not values:
+        return None
+    else:
+
+        high_index = len(values) - 1
+        low_index = 0
+
+        #assert(low_index <= high_index)
+
+        while low_index < high_index:
+            mid_index = (low_index + high_index) // 2
+            mid_val = getter(values[mid_index])
+            if target < mid_val:
+                high_index = mid_index - 1
+            elif mid_val < target:
+                low_index = mid_index + 1
+            else:
+                assert(mid_val == target)
+                return mid_index
+
+        return low_index
 
 class Spectrum(object):
     def __init__(self, id, time, mzs, intensities):
@@ -125,10 +150,10 @@ class Spectrum(object):
 def parseMZML(filename):
     msrun = pymzml.run.Reader(filename)
     for n, spectrum in enumerate(msrun):
-        mzData = [float(x) for x in spectrum.mz]
-        intData = [float(x) for x in spectrum.i]
+        #mzData = [float(x) for x in spectrum.mz]
+        #intData = [float(x) for x in spectrum.i]
         time = spectrum['scan time']
-        yield Spectrum(n, time, mzData, intData)
+        yield Spectrum(n, time, spectrum.mz, spectrum.i)
 
 if __name__ == '__main__':
     main()
